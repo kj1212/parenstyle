@@ -90,6 +90,11 @@ try:
     check('예외 괄호는 그대로 남음',
           engine.strip_parens('가(A)나(B)', skip_starts={1}) == '가(A)나B',
           '결과: %r' % engine.strip_parens('가(A)나(B)', skip_starts={1}))
+    # 병기(한글 뒤 한자): 浚(준 뒤)은 잡고, 法(공백 뒤)은 제외
+    tg = engine.targets('준浚이 法은', RULES, hanja_annot=True)
+    check('병기 한자 감지 (浚 잡고 공백 뒤 法 제외)',
+          [s for a, b, i, w, s in tg] == ['hanja'] and tg[0][2] == '浚',
+          '감지: %r' % tg)
 except Exception as e:
     check('build_rtf', False, repr(e))
 

@@ -31,6 +31,7 @@ DEFAULTS = {
     'body_style': '본문',
     'use_body': True,
     'keep_parens': False,
+    'hanja_annot': False,
     'base_style': '윗첨자',
     'kinds': {
         '한자': {'on': True,  'style': '한자윗첨자'},
@@ -81,7 +82,8 @@ def load_settings():
         return s                      # 없거나 깨졌으면 기본값으로
     if not isinstance(saved, dict):
         return s
-    for k in ('para_style', 'use_para', 'body_style', 'use_body', 'keep_parens', 'base_style'):
+    for k in ('para_style', 'use_para', 'body_style', 'use_body', 'keep_parens',
+              'hanja_annot', 'base_style'):
         if k in saved:
             s[k] = saved[k]
     if isinstance(saved.get('kinds'), dict):
@@ -180,6 +182,16 @@ class App:
         ttk.Checkbutton(b2, text='괄호를 남긴다 (지우지 않고 서식만 입힘)',
                         variable=self.v_keep).grid(row=r + 1, column=0, columnspan=3,
                                                    sticky='w', pady=(8, 0))
+
+        self.v_hanja = tk.BooleanVar(value=self.s['hanja_annot'])
+        ttk.Checkbutton(b2, text='한글 뒤 붙은 한자도 위첨자로 (병기 — 예: 준浚)',
+                        variable=self.v_hanja,
+                        command=self.on_rules_changed).grid(row=r + 2, column=0, columnspan=3,
+                                                            sticky='w', pady=(4, 0))
+        ttk.Label(b2, text="괄호 없이 한글 바로 뒤에 붙은 한자를 '한자' 문자 스타일로. "
+                          "잘못 걸리면 그 한자를 골라 [선택 → 예외].",
+                  foreground=GREY, wraplength=520, justify='left')\
+            .grid(row=r + 3, column=0, columnspan=3, sticky='w', pady=(2, 0))
 
         # ───────────── 저장해 둔 설정 ─────────────
         pre = ttk.Frame(outer)
@@ -280,41 +292,41 @@ class App:
                 state='normal' if self.v_kind_on[kind].get() else 'disabled')
         self.highlight()
         text = self.txt.get('1.0', 'end-1c')
-        n = engine.count_parens(text)
-        if not n:
-            self.v_status.set('괄호가 없습니다.' if text.strip() else '원고를 붙여넣으세요.')
-            return
         rules = self.rules()
+        tg = engine.targets(text, rules, self.v_hanja.get())
+        if not tg:
+            self.v_status.set('바꿀 괄호·한자가 없습니다.' if text.strip() else '원고를 붙여넣으세요.')
+            return
         t, ex = {}, 0
-        for m in engine.PAREN.finditer(text):
-            if 'except' in self.txt.tag_names('1.0+%dc' % m.start()):
+        for a, b, inner, whole, src in tg:
+            if 'except' in self.txt.tag_names('1.0+%dc' % a):
                 ex += 1
                 continue
-            k = engine.pick_kind(m.group(1), rules)
+            k = engine.pick_kind(inner, rules)
             t[k] = t.get(k, 0) + 1
         detail = ', '.join('%s %d' % (k, v) for k, v in
                            sorted(t.items(), key=lambda kv: -kv[1]))
-        msg = '괄호 %d곳' % n
+        msg = '대상 %d곳' % len(tg)
         if ex:
             msg += ' · 예외 %d곳 제외' % ex
         if detail:
             msg += ' — %s' % detail
         self.v_status.set(msg)
 
-    # ── (괄호) 색칠 · 예외 처리 ──
+    # ── (괄호)·병기 한자 색칠 · 예외 처리 ──
     def highlight(self):
-        """(괄호)를 갈래 색으로 칠한다. 예외로 둔 괄호는 회색(except 태그)으로 둔다."""
+        """변환될 (괄호)와 병기 한자를 갈래 색으로 칠한다. 예외는 회색(except 태그) 유지."""
         txt = self.txt
         for kind in KIND_COLOR:
             txt.tag_remove('k_' + kind, '1.0', 'end')
         text = txt.get('1.0', 'end-1c')
         rules = self.rules()
-        for m in engine.PAREN.finditer(text):
-            s = '1.0+%dc' % m.start()
+        for a, b, inner, whole, src in engine.targets(text, rules, self.v_hanja.get()):
+            s = '1.0+%dc' % a
             if 'except' in txt.tag_names(s):
                 continue                       # 예외는 색칠 안 함(회색 유지)
-            kind = engine.pick_kind(m.group(1), rules)
-            txt.tag_add('k_' + kind, s, '1.0+%dc' % m.end())
+            kind = engine.pick_kind(inner, rules)
+            txt.tag_add('k_' + kind, s, '1.0+%dc' % b)
         txt.tag_raise('except')
         try:
             txt.tag_raise('sel')
@@ -322,11 +334,11 @@ class App:
             pass
 
     def excepted_starts(self, text):
-        """예외로 지정된 괄호들의 시작위치(문자 인덱스) 모음."""
+        """예외로 지정된 대상들의 시작위치(문자 인덱스) 모음."""
         starts = set()
-        for m in engine.PAREN.finditer(text):
-            if 'except' in self.txt.tag_names('1.0+%dc' % m.start()):
-                starts.add(m.start())
+        for a, b, inner, whole, src in engine.targets(text, self.rules(), self.v_hanja.get()):
+            if 'except' in self.txt.tag_names('1.0+%dc' % a):
+                starts.add(a)
         return starts
 
     def _sel_offsets(self):
@@ -339,18 +351,18 @@ class App:
     def mark_except(self):
         sel = self._sel_offsets()
         if not sel:
-            messagebox.showinfo('선택 없음', '예외로 둘 (괄호)를 드래그로 선택한 뒤 누르세요.')
+            messagebox.showinfo('선택 없음', '예외로 둘 부분을 드래그로 선택한 뒤 누르세요.')
             return
         f, l = sel
         text = self.txt.get('1.0', 'end-1c')
         n = 0
-        for m in engine.PAREN.finditer(text):
-            if m.start() < l and m.end() > f:          # 선택과 겹치는 괄호
-                self.txt.tag_add('except', '1.0+%dc' % m.start(), '1.0+%dc' % m.end())
+        for a, b, inner, whole, src in engine.targets(text, self.rules(), self.v_hanja.get()):
+            if a < l and b > f:                        # 선택과 겹치는 대상
+                self.txt.tag_add('except', '1.0+%dc' % a, '1.0+%dc' % b)
                 n += 1
         self.on_rules_changed()
-        self.v_status.set('예외 %d곳 지정 — 그 괄호는 그대로 둡니다.' % n if n
-                          else '선택 안에 괄호가 없습니다.')
+        self.v_status.set('예외 %d곳 지정 — 그대로 둡니다.' % n if n
+                          else '선택 안에 대상이 없습니다.')
 
     def clear_except(self):
         sel = self._sel_offsets()
@@ -358,9 +370,9 @@ class App:
         if sel:
             f, l = sel
             n = 0
-            for m in engine.PAREN.finditer(text):
-                if m.start() < l and m.end() > f:
-                    self.txt.tag_remove('except', '1.0+%dc' % m.start(), '1.0+%dc' % m.end())
+            for a, b, inner, whole, src in engine.targets(text, self.rules(), self.v_hanja.get()):
+                if a < l and b > f:
+                    self.txt.tag_remove('except', '1.0+%dc' % a, '1.0+%dc' % b)
                     n += 1
             self.on_rules_changed()
             self.v_status.set('예외 %d곳 해제.' % n)
@@ -378,6 +390,7 @@ class App:
         self.txt.insert('1.0',
                         '공자(孔子)는 논어(論語)에서 이렇게 말했다(주석1).\n'
                         '칸트(Kant)의 정언명령과 각주(12)도 섞여 있다.\n'
+                        '정약용丁若鏞은 목민심서牧民心書를 썼다.  ← 병기(한글 뒤 한자)\n'
                         '괄호 없는 줄은 그대로 남는다.')
         self.on_rules_changed()
 
@@ -436,7 +449,8 @@ class App:
             messagebox.showwarning('확인', '본문 문자 스타일 이름을 적거나 체크를 끄세요.')
             return None
         skip = self.excepted_starts(text)
-        rtf = engine.build_rtf(text, rules, para, body, self.v_keep.get(), skip_starts=skip)
+        rtf = engine.build_rtf(text, rules, para, body, self.v_keep.get(),
+                               skip_starts=skip, hanja_annot=self.v_hanja.get())
         plain = text if self.v_keep.get() else engine.strip_parens(text, skip_starts=skip)
         return text, rtf, plain
 
@@ -450,7 +464,7 @@ class App:
         except Exception as e:
             messagebox.showerror('클립보드 오류', str(e))
             return
-        t = engine.tally(text, self.rules())
+        t = engine.tally(text, self.rules(), self.v_hanja.get())
         detail = ', '.join('%s %d곳' % (k, v) for k, v in
                            sorted(t.items(), key=lambda kv: -kv[1]))
         self.v_status.set('담았습니다 — %s. 인디자인에 붙여넣으세요.' % detail)
@@ -476,6 +490,7 @@ class App:
             'body_style': self.v_body.get(),
             'use_body': self.v_use_body.get(),
             'keep_parens': self.v_keep.get(),
+            'hanja_annot': self.v_hanja.get(),
             'base_style': self.v_base.get(),
             'kinds': {k: {'on': self.v_kind_on[k].get(),
                           'style': self.v_kind_style[k].get()} for k in engine.KINDS},
@@ -487,6 +502,7 @@ class App:
         self.v_body.set(p.get('body_style', ''))
         self.v_use_body.set(bool(p.get('use_body', True)))
         self.v_keep.set(bool(p.get('keep_parens', False)))
+        self.v_hanja.set(bool(p.get('hanja_annot', False)))
         self.v_base.set(p.get('base_style', ''))
         for k in engine.KINDS:
             c = (p.get('kinds') or {}).get(k) or {}

@@ -18,6 +18,11 @@ PARA_STYLE_ID = 0
 # 반각 ( ) 와 전각 （ ） 를 모두 잡는다. 중첩은 다루지 않는다.
 PAREN = re.compile(r'[(（]([^()（）]+)[)）]')
 
+# 한글 바로 뒤에 괄호 없이 붙은 한자(병기). 예: 준浚, 공자孔子
+# 앞 글자가 한글일 때의 한자 런만 잡는다 (문두·공백 뒤 한자는 본문으로 둔다).
+HANJA_ANNOT = re.compile(
+    r'(?<=[가-힣])([一-鿿㐀-䶿豈-﫿]+)')
+
 # 갈래 이름. 위에서부터 먼저 맞는 것 하나가 적용된다. '나머지'는 언제나 마지막.
 KINDS = ('한자', '숫자', '영문', '한글')
 FALLBACK = '나머지'
@@ -104,11 +109,31 @@ def count_parens(text):
     return len(PAREN.findall(text))
 
 
-def tally(text, rules):
+def targets(text, rules, hanja_annot=False):
+    """변환 대상 구간 목록을 (start, end, inner, whole, source) 로 돌려준다.
+    source: 'paren'(괄호) / 'hanja'(한글 뒤 병기 한자). 위치순.
+    괄호 안에 든 병기 한자는 뺀다 (괄호가 이미 그 구간을 맡으므로)."""
+    spans = []
+    for m in PAREN.finditer(text):
+        spans.append((m.start(), m.end(), m.group(1), m.group(0), 'paren'))
+    if hanja_annot:
+        for m in HANJA_ANNOT.finditer(text):
+            spans.append((m.start(), m.end(), m.group(1), m.group(1), 'hanja'))
+    spans.sort(key=lambda x: x[0])
+    parens = [(a, b) for a, b, _, _, s in spans if s == 'paren']
+    out = []
+    for a, b, inner, whole, src in spans:
+        if src == 'hanja' and any(pa <= a and b <= pb for pa, pb in parens):
+            continue
+        out.append((a, b, inner, whole, src))
+    return out
+
+
+def tally(text, rules, hanja_annot=False):
     """갈래별로 몇 곳인지 세어 돌려준다. 창에 보여주려고."""
     out = {}
-    for m in PAREN.finditer(text):
-        k = pick_kind(m.group(1), rules)
+    for a, b, inner, whole, src in targets(text, rules, hanja_annot):
+        k = pick_kind(inner, rules)
         out[k] = out.get(k, 0) + 1
     return out
 
@@ -120,7 +145,7 @@ def pick_kind(inner, rules):
 
 
 def build_rtf(text, rules, para_style_name=None, body_char_style=None,
-              keep_parens=False, skip_starts=None):
+              keep_parens=False, skip_starts=None, hanja_annot=False):
     """
     text        원고 (여러 줄 가능, 한 줄이 한 단락)
     rules       {'나머지': '위첨자', '한자': '한자위첨자', ...}  괄호 안(위첨자)에 물릴 문자 스타일.
@@ -175,17 +200,18 @@ def build_rtf(text, rules, para_style_name=None, body_char_style=None,
     off = 0                       # 전체 글 기준 현재 줄의 시작 문자 위치
     for line in lines:
         chunks, pos = [], 0
-        for m in PAREN.finditer(line):
-            if m.start() > pos:
-                chunks.append(_run(line[pos:m.start()], body_char_style, False))
-            if (off + m.start()) in skip:
-                # 예외: 괄호째 그대로, 본문 문자 스타일만 (변환하지 않음)
-                chunks.append(_run(m.group(0), body_char_style, False))
+        for (a, b, inner, whole, src) in targets(line, rules, hanja_annot):
+            if a > pos:
+                chunks.append(_run(line[pos:a], body_char_style, False))
+            if (off + a) in skip:
+                # 예외: 그대로, 본문 문자 스타일만 (변환하지 않음)
+                chunks.append(_run(whole, body_char_style, False))
             else:
-                kind = pick_kind(m.group(1), rules)
-                inner = m.group(0) if keep_parens else m.group(1)
-                chunks.append(_run(inner, rules[kind], True))
-            pos = m.end()
+                kind = pick_kind(inner, rules)
+                # 괄호는 keep_parens 면 괄호째, 아니면 안쪽만. 병기 한자는 한자만.
+                shown = whole if (src == 'paren' and keep_parens) else inner
+                chunks.append(_run(shown, rules[kind], True))
+            pos = b
         if pos < len(line):
             chunks.append(_run(line[pos:], body_char_style, False))
         body.append(''.join(chunks))
