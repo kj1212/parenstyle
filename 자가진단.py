@@ -86,6 +86,10 @@ try:
           '{\\*\\cs' not in body_part)
     check('본문 글자가 문자 스타일로 감싸짐 ({\\cs1 …})', '{\\cs1 ' in body_part)
     check('위첨자 런에 \\super 가 붙음', '\\super' in body_part)
+    # 예외(skip_starts): 지정한 괄호는 변환하지 않고 그대로 둔다
+    check('예외 괄호는 그대로 남음',
+          engine.strip_parens('가(A)나(B)', skip_starts={1}) == '가(A)나B',
+          '결과: %r' % engine.strip_parens('가(A)나(B)', skip_starts={1}))
 except Exception as e:
     check('build_rtf', False, repr(e))
 

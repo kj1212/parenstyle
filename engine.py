@@ -86,9 +86,18 @@ def rtf_escape(s):
     return ''.join(out)
 
 
-def strip_parens(text):
-    """괄호만 벗긴 평문. 서식을 못 읽는 곳을 위한 대비책."""
-    return PAREN.sub(lambda m: m.group(1), text)
+def strip_parens(text, skip_starts=None):
+    """괄호만 벗긴 평문. 서식을 못 읽는 곳을 위한 대비책.
+    skip_starts 에 든 시작위치의 괄호는 예외로 보고 그대로 둔다."""
+    if not skip_starts:
+        return PAREN.sub(lambda m: m.group(1), text)
+    out, pos = [], 0
+    for m in PAREN.finditer(text):
+        out.append(text[pos:m.start()])
+        out.append(m.group(0) if m.start() in skip_starts else m.group(1))
+        pos = m.end()
+    out.append(text[pos:])
+    return ''.join(out)
 
 
 def count_parens(text):
@@ -110,7 +119,8 @@ def pick_kind(inner, rules):
     return k if k in rules else FALLBACK
 
 
-def build_rtf(text, rules, para_style_name=None, body_char_style=None, keep_parens=False):
+def build_rtf(text, rules, para_style_name=None, body_char_style=None,
+              keep_parens=False, skip_starts=None):
     """
     text        원고 (여러 줄 가능, 한 줄이 한 단락)
     rules       {'나머지': '위첨자', '한자': '한자위첨자', ...}  괄호 안(위첨자)에 물릴 문자 스타일.
@@ -118,6 +128,8 @@ def build_rtf(text, rules, para_style_name=None, body_char_style=None, keep_pare
     para_style_name  본문 문단에 물릴 단락 스타일 이름. None 이면 단락 스타일을 안 건드린다
     body_char_style  괄호 밖 본문 글자에 물릴 문자 스타일 이름. None 이면 본문에 문자 스타일 안 물림
     keep_parens  True 면 괄호를 남기고 서식만 입힌다
+    skip_starts  예외로 둘 괄호들의 시작위치(전체 글 기준 문자 인덱스) 모음.
+                 여기 든 괄호는 변환하지 않고 괄호째 본문으로 둔다.
 
     인디자인이 실제로 쓰는 2단계 그대로:
       · 문단     → 단락 스타일 (\\sN)
@@ -158,19 +170,26 @@ def build_rtf(text, rules, para_style_name=None, body_char_style=None, keep_pare
     if not lines:
         lines = ['']
 
+    skip = skip_starts or ()
     body = []
+    off = 0                       # 전체 글 기준 현재 줄의 시작 문자 위치
     for line in lines:
         chunks, pos = [], 0
         for m in PAREN.finditer(line):
             if m.start() > pos:
                 chunks.append(_run(line[pos:m.start()], body_char_style, False))
-            kind = pick_kind(m.group(1), rules)
-            inner = m.group(0) if keep_parens else m.group(1)
-            chunks.append(_run(inner, rules[kind], True))
+            if (off + m.start()) in skip:
+                # 예외: 괄호째 그대로, 본문 문자 스타일만 (변환하지 않음)
+                chunks.append(_run(m.group(0), body_char_style, False))
+            else:
+                kind = pick_kind(m.group(1), rules)
+                inner = m.group(0) if keep_parens else m.group(1)
+                chunks.append(_run(inner, rules[kind], True))
             pos = m.end()
         if pos < len(line):
             chunks.append(_run(line[pos:], body_char_style, False))
         body.append(''.join(chunks))
+        off += len(line) + 1      # 줄 길이 + 줄바꿈 한 글자
 
     ps_name = rtf_escape(para_style_name) if para_style_name else None
     para_tag = ('\\s%d ' % PARA_STYLE_ID) if ps_name else ''

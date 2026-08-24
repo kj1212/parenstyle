@@ -48,6 +48,16 @@ KIND_HINT = {
     '한글': '가나다',
 }
 
+# 원고에서 (괄호)를 갈래별로 칠하는 색 (연한 배경). '나머지'는 engine.FALLBACK.
+KIND_COLOR = {
+    '한자':   '#cfe3ff',   # 파랑
+    '숫자':   '#d6f5d6',   # 초록
+    '영문':   '#ffe6c7',   # 주황
+    '한글':   '#ecd9ff',   # 보라
+    '나머지': '#ffe1b0',   # 살구 (기본)
+}
+EXCEPT_BG = '#e2e2e2'      # 예외로 둔 괄호 (회색 + 취소선)
+
 
 def config_path():
     if sys.platform == 'darwin':
@@ -194,6 +204,9 @@ class App:
         ttk.Button(bar, text='파일 열기…', command=self.from_file).pack(side='left', padx=(6, 0))
         ttk.Button(bar, text='비우기', command=self.clear).pack(side='left', padx=(6, 0))
         ttk.Button(bar, text='보기 예시 넣기', command=self.sample).pack(side='left', padx=(6, 0))
+        # 예외 처리 (오른쪽)
+        ttk.Button(bar, text='예외 해제', command=self.clear_except).pack(side='right')
+        ttk.Button(bar, text='선택 → 예외', command=self.mark_except).pack(side='right', padx=(0, 6))
 
         wrap = ttk.Frame(b3)
         wrap.pack(fill='both', expand=True)
@@ -203,6 +216,17 @@ class App:
         self.txt.pack(side='left', fill='both', expand=True)
         sb.pack(side='right', fill='y')
         self.txt.bind('<KeyRelease>', lambda e: self.on_rules_changed())
+
+        # 색칠 태그 (갈래별 배경) + 예외 태그
+        for kind, col in KIND_COLOR.items():
+            self.txt.tag_configure('k_' + kind, background=col)
+        self.txt.tag_configure('except', background=EXCEPT_BG,
+                               foreground='#8a8a8a', overstrike=True)
+        self.txt.tag_raise('except')   # 예외는 색칠 위에
+
+        ttk.Label(b3, text='색칠된 (괄호)가 변환됩니다. 드래그로 골라 [선택 → 예외] 를 누르면 '
+                          '그 괄호는 그대로 둡니다(회색). 되돌리려면 [예외 해제].',
+                  foreground=GREY, wraplength=560, justify='left').pack(fill='x', pady=(4, 0))
 
         # ───────────── 실행 ─────────────
         run = ttk.Frame(outer)
@@ -254,15 +278,96 @@ class App:
         for kind in engine.KINDS:
             self.e_kind[kind].configure(
                 state='normal' if self.v_kind_on[kind].get() else 'disabled')
+        self.highlight()
         text = self.txt.get('1.0', 'end-1c')
         n = engine.count_parens(text)
         if not n:
             self.v_status.set('괄호가 없습니다.' if text.strip() else '원고를 붙여넣으세요.')
             return
-        t = engine.tally(text, self.rules())
+        rules = self.rules()
+        t, ex = {}, 0
+        for m in engine.PAREN.finditer(text):
+            if 'except' in self.txt.tag_names('1.0+%dc' % m.start()):
+                ex += 1
+                continue
+            k = engine.pick_kind(m.group(1), rules)
+            t[k] = t.get(k, 0) + 1
         detail = ', '.join('%s %d' % (k, v) for k, v in
                            sorted(t.items(), key=lambda kv: -kv[1]))
-        self.v_status.set('괄호 %d곳 — %s' % (n, detail))
+        msg = '괄호 %d곳' % n
+        if ex:
+            msg += ' · 예외 %d곳 제외' % ex
+        if detail:
+            msg += ' — %s' % detail
+        self.v_status.set(msg)
+
+    # ── (괄호) 색칠 · 예외 처리 ──
+    def highlight(self):
+        """(괄호)를 갈래 색으로 칠한다. 예외로 둔 괄호는 회색(except 태그)으로 둔다."""
+        txt = self.txt
+        for kind in KIND_COLOR:
+            txt.tag_remove('k_' + kind, '1.0', 'end')
+        text = txt.get('1.0', 'end-1c')
+        rules = self.rules()
+        for m in engine.PAREN.finditer(text):
+            s = '1.0+%dc' % m.start()
+            if 'except' in txt.tag_names(s):
+                continue                       # 예외는 색칠 안 함(회색 유지)
+            kind = engine.pick_kind(m.group(1), rules)
+            txt.tag_add('k_' + kind, s, '1.0+%dc' % m.end())
+        txt.tag_raise('except')
+        try:
+            txt.tag_raise('sel')
+        except tk.TclError:
+            pass
+
+    def excepted_starts(self, text):
+        """예외로 지정된 괄호들의 시작위치(문자 인덱스) 모음."""
+        starts = set()
+        for m in engine.PAREN.finditer(text):
+            if 'except' in self.txt.tag_names('1.0+%dc' % m.start()):
+                starts.add(m.start())
+        return starts
+
+    def _sel_offsets(self):
+        try:
+            a, b = self.txt.index('sel.first'), self.txt.index('sel.last')
+        except tk.TclError:
+            return None
+        return len(self.txt.get('1.0', a)), len(self.txt.get('1.0', b))
+
+    def mark_except(self):
+        sel = self._sel_offsets()
+        if not sel:
+            messagebox.showinfo('선택 없음', '예외로 둘 (괄호)를 드래그로 선택한 뒤 누르세요.')
+            return
+        f, l = sel
+        text = self.txt.get('1.0', 'end-1c')
+        n = 0
+        for m in engine.PAREN.finditer(text):
+            if m.start() < l and m.end() > f:          # 선택과 겹치는 괄호
+                self.txt.tag_add('except', '1.0+%dc' % m.start(), '1.0+%dc' % m.end())
+                n += 1
+        self.on_rules_changed()
+        self.v_status.set('예외 %d곳 지정 — 그 괄호는 그대로 둡니다.' % n if n
+                          else '선택 안에 괄호가 없습니다.')
+
+    def clear_except(self):
+        sel = self._sel_offsets()
+        text = self.txt.get('1.0', 'end-1c')
+        if sel:
+            f, l = sel
+            n = 0
+            for m in engine.PAREN.finditer(text):
+                if m.start() < l and m.end() > f:
+                    self.txt.tag_remove('except', '1.0+%dc' % m.start(), '1.0+%dc' % m.end())
+                    n += 1
+            self.on_rules_changed()
+            self.v_status.set('예외 %d곳 해제.' % n)
+        elif self.txt.tag_ranges('except'):
+            if messagebox.askyesno('예외 해제', '지정한 예외를 모두 해제할까요?'):
+                self.txt.tag_remove('except', '1.0', 'end')
+                self.on_rules_changed()
 
     def clear(self):
         self.txt.delete('1.0', 'end')
@@ -330,8 +435,9 @@ class App:
         if self.v_use_body.get() and not body:
             messagebox.showwarning('확인', '본문 문자 스타일 이름을 적거나 체크를 끄세요.')
             return None
-        rtf = engine.build_rtf(text, rules, para, body, self.v_keep.get())
-        plain = text if self.v_keep.get() else engine.strip_parens(text)
+        skip = self.excepted_starts(text)
+        rtf = engine.build_rtf(text, rules, para, body, self.v_keep.get(), skip_starts=skip)
+        plain = text if self.v_keep.get() else engine.strip_parens(text, skip_starts=skip)
         return text, rtf, plain
 
     def convert(self):
