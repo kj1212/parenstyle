@@ -66,9 +66,11 @@ TEXT = ('공자(孔子)는 논어(論語)에서 말했다(주석1).\n'
         '칸트(Kant)와 각주(12)도 있다.\n'
         '괄호 없는 줄.')
 RULES = {'나머지': '윗첨자', '한자': '한자윗첨자'}
+BODY = '본문명조'
 rtf = None
 try:
-    rtf = engine.build_rtf(TEXT, RULES, '[기본 단락]')
+    rtf = engine.build_rtf(TEXT, RULES, '[기본 단락]', body_char_style=BODY)
+    body_part = rtf.split('\\ksulang')[-1]
     check('괄호 5곳을 찾음', engine.count_parens(TEXT) == 5,
           '찾은 수: %d' % engine.count_parens(TEXT))
     try:
@@ -77,10 +79,13 @@ try:
     except UnicodeEncodeError as e:
         check('결과가 순수 아스키', False, str(e))
     check('머리말이 맞음', rtf.startswith('{\\rtf1'))
-    check('문자 스타일 이름 2개가 들어감', rtf.count('\\additive') == 2,
+    # 본문명조 + 한자윗첨자 + 윗첨자 = 3개
+    check('문자 스타일 이름 3개가 들어감', rtf.count('\\additive') == 3,
           '들어간 수: %d' % rtf.count('\\additive'))
     check("본문에 '\\*\\cs' 가 없음 (있으면 글자가 사라진다)",
-          '{\\*\\cs' not in rtf.split('\\ksulang')[-1])
+          '{\\*\\cs' not in body_part)
+    check('본문 글자가 문자 스타일로 감싸짐 ({\\cs1 …})', '{\\cs1 ' in body_part)
+    check('위첨자 런에 \\super 가 붙음', '\\super' in body_part)
 except Exception as e:
     check('build_rtf', False, repr(e))
 
@@ -103,7 +108,7 @@ if rtf:
               '읽은 것: %r' % back_rtf[:60])
         if back_rtf.startswith('{\\rtf1'):
             check('RTF 내용이 온전함',
-                  back_rtf.count('\\additive') == 2,
+                  back_rtf.count('\\additive') == 3,
                   '\\additive 수: %d' % back_rtf.count('\\additive'))
     except Exception as e:
         import traceback

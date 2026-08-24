@@ -28,6 +28,8 @@ GREY = '#888'
 DEFAULTS = {
     'para_style': '[기본 단락]',
     'use_para': True,
+    'body_style': '본문',
+    'use_body': True,
     'keep_parens': False,
     'base_style': '윗첨자',
     'kinds': {
@@ -69,7 +71,7 @@ def load_settings():
         return s                      # 없거나 깨졌으면 기본값으로
     if not isinstance(saved, dict):
         return s
-    for k in ('para_style', 'use_para', 'keep_parens', 'base_style'):
+    for k in ('para_style', 'use_para', 'body_style', 'use_body', 'keep_parens', 'base_style'):
         if k in saved:
             s[k] = saved[k]
     if isinstance(saved.get('kinds'), dict):
@@ -103,19 +105,31 @@ class App:
         outer = ttk.Frame(root, padding=12)
         outer.pack(fill='both', expand=True)
 
-        # ───────────── 1. 단락 스타일 ─────────────
-        b1 = ttk.LabelFrame(outer, text='1단계 · 단락 스타일 (본문 전체)', padding=10)
+        # ───────────── 1. 본문 (괄호 밖 전체) ─────────────
+        b1 = ttk.LabelFrame(outer, text='1단계 · 본문 (괄호 밖 전체)', padding=10)
         b1.pack(fill='x')
         b1.columnconfigure(1, weight=1)
 
+        # 단락 스타일
         self.v_use_para = tk.BooleanVar(value=self.s['use_para'])
-        ttk.Checkbutton(b1, text='물린다', variable=self.v_use_para,
+        ttk.Checkbutton(b1, text='단락 스타일', variable=self.v_use_para, width=10,
                         command=self.toggle_para).grid(row=0, column=0, sticky='w')
         self.v_para = tk.StringVar(value=self.s['para_style'])
         self.e_para = ttk.Entry(b1, textvariable=self.v_para)
         self.e_para.grid(row=0, column=1, sticky='ew', padx=(8, 0))
-        ttk.Label(b1, text='끄면 붙여넣는 자리의 단락 스타일을 그대로 씁니다.',
-                  foreground=GREY).grid(row=1, column=1, sticky='w', padx=(8, 0), pady=(3, 0))
+
+        # 문자 스타일 (본문)
+        self.v_use_body = tk.BooleanVar(value=self.s['use_body'])
+        ttk.Checkbutton(b1, text='문자 스타일', variable=self.v_use_body, width=10,
+                        command=self.toggle_body).grid(row=1, column=0, sticky='w', pady=(6, 0))
+        self.v_body = tk.StringVar(value=self.s['body_style'])
+        self.e_body = ttk.Entry(b1, textvariable=self.v_body)
+        self.e_body.grid(row=1, column=1, sticky='ew', padx=(8, 0), pady=(6, 0))
+
+        ttk.Label(b1, text='본문(괄호 밖) 글자에 단락 스타일과 문자 스타일을 함께 물립니다. '
+                          '끄면 붙여넣는 자리 스타일을 그대로 씁니다.',
+                  foreground=GREY, wraplength=520, justify='left')\
+            .grid(row=2, column=1, sticky='w', padx=(8, 0), pady=(4, 0))
 
         # ───────────── 2. 문자 스타일 ─────────────
         b2 = ttk.LabelFrame(outer, text='2단계 · 문자 스타일 (괄호 안쪽)', padding=10)
@@ -202,6 +216,7 @@ class App:
             .pack(fill='x', pady=(8, 0))
 
         self.toggle_para()
+        self.toggle_body()
         self.on_rules_changed()
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         root.bind('<Command-Return>', lambda e: self.convert())
@@ -222,6 +237,9 @@ class App:
 
     def toggle_para(self):
         self.e_para.configure(state='normal' if self.v_use_para.get() else 'disabled')
+
+    def toggle_body(self):
+        self.e_body.configure(state='normal' if self.v_use_body.get() else 'disabled')
 
     def rules(self):
         r = {engine.FALLBACK: self.v_base.get().strip()}
@@ -308,7 +326,11 @@ class App:
         if self.v_use_para.get() and not para:
             messagebox.showwarning('확인', '단락 스타일 이름을 적거나 체크를 끄세요.')
             return None
-        rtf = engine.build_rtf(text, rules, para, self.v_keep.get())
+        body = self.v_body.get().strip() if self.v_use_body.get() else None
+        if self.v_use_body.get() and not body:
+            messagebox.showwarning('확인', '본문 문자 스타일 이름을 적거나 체크를 끄세요.')
+            return None
+        rtf = engine.build_rtf(text, rules, para, body, self.v_keep.get())
         plain = text if self.v_keep.get() else engine.strip_parens(text)
         return text, rtf, plain
 
@@ -345,6 +367,8 @@ class App:
         return {
             'para_style': self.v_para.get(),
             'use_para': self.v_use_para.get(),
+            'body_style': self.v_body.get(),
+            'use_body': self.v_use_body.get(),
             'keep_parens': self.v_keep.get(),
             'base_style': self.v_base.get(),
             'kinds': {k: {'on': self.v_kind_on[k].get(),
@@ -354,6 +378,8 @@ class App:
     def restore(self, p):
         self.v_para.set(p.get('para_style', ''))
         self.v_use_para.set(bool(p.get('use_para', True)))
+        self.v_body.set(p.get('body_style', ''))
+        self.v_use_body.set(bool(p.get('use_body', True)))
         self.v_keep.set(bool(p.get('keep_parens', False)))
         self.v_base.set(p.get('base_style', ''))
         for k in engine.KINDS:
@@ -361,6 +387,7 @@ class App:
             self.v_kind_on[k].set(bool(c.get('on', False)))
             self.v_kind_style[k].set(c.get('style', ''))
         self.toggle_para()
+        self.toggle_body()
         self.on_rules_changed()
 
     def refresh_presets(self):
